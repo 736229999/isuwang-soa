@@ -86,9 +86,6 @@ object Scrooge {
         }
       }
 
-      if (outDir == null) // 如果输出路径为空,则默认为当前目录
-        outDir = System.getProperty("user.dir")
-
 
       if (inDir != null) {
 
@@ -109,31 +106,28 @@ object Scrooge {
       }
 
       //根据时间戳判断是否需要重新生成文件
-      //1. 如果 (thrift文件 + outDirFiles) 任一修改时间 > xml的时间 => needUpdate
+      //1. 如果thrift文件修改时间 > xml的时间 => needUpdate
       //2. 如果没有xml文件 => needUpdate
-      //3. 如果language == scala && scala文件没有生成过 => needUpdate
-      //4. 如果language == java && java文件没有生成过 => needUpdate
+      //3. 如果 language equals scala && scalaXmlCount ==0 => needUpdate
       val resourcePath = new File(resources(0)).getParentFile.getParentFile
-      val thriftFiles = resources.map(new File(_))
+      val thriftModifyTimes = resources.map(file => new File(file).lastModified())
       val needUpdate = {
         val xmlFiles = resourcePath.listFiles().filter(_.getName.endsWith(".xml"))
-        val targetDirFiles = getFiles(outDir).filter(file=> {
-          val fileName = file.getName
-          fileName.endsWith(".java") || fileName.endsWith(".scala")
-        })
-
-        if (xmlFiles.size <= 0) {
+        if (xmlFiles.exists(xmlFile => thriftModifyTimes.exists(_ > xmlFile.lastModified()))) {
           true
-        } else if ((xmlFiles.toList ++: targetDirFiles)
-          .exists(generatedFile => thriftFiles.exists(_.lastModified() > generatedFile.lastModified()))) {
+        } else if (xmlFiles.size <= 0) {
           true
         } else {
+          val files = getFile(outDir)
           language match {
-            case "java" => if (targetDirFiles.filter(_.getName.endsWith(".java")).size <= 0) true else false
-            case "scala" => if (targetDirFiles.filter(_.getName.endsWith(".scala")).size <= 0) true else false
+            case "java" => if (files.filter(_.getName.endsWith(".java")).size <= 0) true else false
+            case "scala" => if (files.filter(_.getName.endsWith(".scala")).size <= 0) true else false
           }
         }
       }
+
+      if (outDir == null) // 如果输出路径为空,则默认为当前目录
+        outDir = System.getProperty("user.dir")
 
       if (resources != null && language != "" && needUpdate) {
 
@@ -166,10 +160,9 @@ object Scrooge {
 
   }
 
-
-  def getFiles(path: String): List[File] = {
+  def getFile(path: String): List[File] = {
     if (new File(path).isDirectory) {
-      new File(path).listFiles().flatMap(i => getFiles(i.getPath)).toList
+      new File(path).listFiles().flatMap(i => getFile(i.getPath)).toList
     } else {
       List(new File(path))
     }

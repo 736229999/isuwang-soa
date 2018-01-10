@@ -1,9 +1,7 @@
 package com.isuwang.dapeng.maven.plugin;
 
 import com.isuwang.dapeng.bootstrap.Bootstrap;
-import com.isuwang.dapeng.bootstrap.classloader.ApplicationClassLoader;
-import com.isuwang.dapeng.bootstrap.classloader.ContainerClassLoader;
-import com.isuwang.dapeng.bootstrap.classloader.CoreClassLoader;
+import com.isuwang.dapeng.bootstrap.classloader.*;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.MojoFailureException;
 import org.apache.maven.plugins.annotations.Mojo;
@@ -16,7 +14,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
-import java.util.stream.Collectors;
 
 /**
  * Run Container Plugin
@@ -27,20 +24,21 @@ import java.util.stream.Collectors;
 @Mojo(name = "run", threadSafe = true, requiresDependencyResolution = ResolutionScope.TEST)
 public class RunContainerPlugin extends SoaAbstractMojo {
 
-    @Override
     public void execute() throws MojoExecutionException, MojoFailureException {
-        if (project == null) {
+        if (project == null)
             throw new MojoExecutionException("not found project.");
-        }
 
         getLog().info("bundle:" + project.getGroupId() + ":" + project.getArtifactId() + ":" + project.getVersion());
 
         System.setProperty("soa.base", new File(project.getBuild().getOutputDirectory()).getAbsolutePath().replace("/target/classes", ""));
         System.setProperty("soa.run.mode", "maven");
 
-        IsolatedThreadGroup threadGroup = new IsolatedThreadGroup("RunContainerPlugin");
+        final String mainClass = Bootstrap.class.getName();
+
+        IsolatedThreadGroup threadGroup = new IsolatedThreadGroup(mainClass);
         Thread bootstrapThread = new Thread(threadGroup, () -> {
             try {
+                //ClassLoader contextClassLoader = Thread.currentThread().getContextClassLoader();
 
                 URL[] urls = ((URLClassLoader) Thread.currentThread().getContextClassLoader()).getURLs();
 
@@ -51,63 +49,66 @@ public class RunContainerPlugin extends SoaAbstractMojo {
 
                     if (url.getFile().matches("^.*/dapeng-transaction-impl.*\\.jar$")) {
                         iterator.remove();
+
                         continue;
                     }
+
+                    if (removeContainerAndBootstrap(iterator, url)) continue;
+
+                    if (removeServiceProjectArtifact(iterator, url)) continue;
                 }
+//                List<URL> pluginUrls = new ArrayList<>(Arrays.asList(urls));
+//                iterator = pluginUrls.iterator();
+//                while (iterator.hasNext()) {
+//                    URL url = iterator.next();
+//                    if (url.getFile().matches("^.*/dapeng-transaction-impl.*\\.jar$")) {
+//                        iterator.remove();
+//                        continue;
+//                    }
+//                    if (removeContainerAndBootstrap(iterator, url)) continue;
+//                    if (removeServiceProjectArtifact(iterator, url)) continue;
+//                }
 
                 List<URL> appUrls = new ArrayList<>(Arrays.asList(urls));
                 iterator = appUrls.iterator();
-
                 while (iterator.hasNext()) {
                     URL url = iterator.next();
                     if (removeTwitterDependency(iterator,url)) continue;
                     if (removeContainerAndBootstrap(iterator, url)) continue;
                 }
+
                 List<URL> platformUrls = new ArrayList<>(Arrays.asList(urls));
                 iterator = platformUrls.iterator();
                 while (iterator.hasNext()) {
                     URL url = iterator.next();
                     if (removeServiceProjectArtifact(iterator, url)) continue;
-                    //if (removeTwitterAndScalaDependency(iterator,url)) continue;
+                    if (removeTwitterDependency(iterator,url)) continue;
                 }
 
-                List<List<URL>> appURLsList = new ArrayList<>();
-                appURLsList.add(appUrls);
+                ClassLoaderManager.shareClassLoader = new ShareClassLoader(shareUrls.toArray(new URL[shareUrls.size()]));
+                ClassLoaderManager.platformClassLoader = new PlatformClassLoader(platformUrls.toArray(new URL[platformUrls.size()]));
+                ClassLoaderManager.appClassLoaders.add(new AppClassLoader(appUrls.toArray(new URL[appUrls.size()])));
+                ClassLoaderManager.pluginClassLoaders.add(new PluginClassLoader(shareUrls.toArray(new URL[shareUrls.size()])));
 
-                CoreClassLoader coreClassLoader = new CoreClassLoader(shareUrls.toArray(new URL[shareUrls.size()]));
-
-                List<ClassLoader> appClassLoaders = appURLsList.stream().map(i ->
-                        new ApplicationClassLoader(i.toArray(new URL[i.size()]),coreClassLoader)).collect(Collectors.toList());
-
-                ContainerClassLoader platformClassLoader = new ContainerClassLoader(platformUrls.toArray(new URL[platformUrls.size()]),coreClassLoader);
-
-                System.out.println("------set classloader-------------");
-                Thread.currentThread().setContextClassLoader(coreClassLoader);
-
-                Bootstrap bootstrap = new Bootstrap();
-                bootstrap.startup(platformClassLoader,appClassLoaders);
-
-
-
+                Bootstrap.main(new String[]{});
             } catch (Exception e) {
                 Thread.currentThread().getThreadGroup().uncaughtException(Thread.currentThread(), e);
             }
-        }, "RunContainerPlugin" + ".main()");
+        }, mainClass + ".main()");
         bootstrapThread.setContextClassLoader(getClassLoader());
         bootstrapThread.start();
 
         joinNonDaemonThreads(threadGroup);
     }
 
+    private boolean removeContainerAndBootstrap(Iterator<URL> iterator, URL url) {
+        if (url.getFile().matches("^.*/dapeng-container.*\\.jar$")) {
+            iterator.remove();
 
-    private boolean removeServiceProjectArtifact(Iterator<URL> iterator, URL url) {
-        String regex = project.getArtifact().getFile().getAbsolutePath().replaceAll("\\\\", "/");
-
-        if (File.separator.equals("\\")) {
-            regex = regex.replace(File.separator, File.separator + File.separator);
+            return true;
         }
 
-        if (url.getFile().matches("^.*" + regex + ".*$")) {
+        if (url.getFile().matches("^.*/dapeng-bootstrap.*\\.jar$")) {
             iterator.remove();
 
             return true;
@@ -123,20 +124,13 @@ public class RunContainerPlugin extends SoaAbstractMojo {
         return false;
     }
 
-    private boolean removeContainerAndBootstrap(Iterator<URL> iterator, URL url) {
-        if (url.getFile().matches("^.*/dapeng-container-api.*\\.jar$")) {
-            iterator.remove();
+    private boolean removeServiceProjectArtifact(Iterator<URL> iterator, URL url) {
+        String regex = project.getArtifact().getFile().getAbsolutePath().replaceAll("\\\\", "/");
 
-            return true;
-        }
+        if (File.separator.equals("\\"))
+            regex = regex.replace(File.separator, File.separator + File.separator);
 
-        if (url.getFile().matches("^.*/dapeng-container-impl.*\\.jar$")) {
-            iterator.remove();
-
-            return true;
-        }
-
-        if (url.getFile().matches("^.*/dapeng-bootstrap.*\\.jar$")) {
+        if (url.getFile().matches("^.*" + regex + ".*$")) {
             iterator.remove();
 
             return true;
